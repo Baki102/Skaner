@@ -94,7 +94,12 @@ def fetch_all(tickers):
         return out
     for t in tickers:
         try:
-            out[t] = d[t].dropna(subset=["Close"])
+            x = d[t].dropna(subset=["Close"])
+            last = x.index[-1]
+            if last.tzinfo is None:
+                last = last.tz_localize(ET)
+            if (pd.Timestamp.now(tz=ET) - last).total_seconds() < 900:
+                out[t] = x
         except Exception:
             pass
     return out
