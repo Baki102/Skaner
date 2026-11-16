@@ -2,6 +2,7 @@
 🟢 = odbicie już widać
 🟡 = możliwe odbicie, niepotwierdzone
 To sygnały techniczne, nie rekomendacje."""
+import csv
 import io
 import os
 import time
@@ -21,10 +22,17 @@ MIN_DROP = 0.03           # spadek min. 3% od maksimum z ostatnich 60 minut
 RSI_LOW = 35              # RSI(9) zszedł poniżej tej wartości w ostatnich 15 min
 COOLDOWN_MIN = 30         # ten sam sygnał dla spółki nie częściej niż co 30 min
 FALLBACK = ["SOFI", "F", "SNAP", "NIO", "PLUG"]   # gdy nie uda się pobrać listy spółek
+LOG_FILE = os.getenv("LOG_FILE", "alerts_log.csv")   # dziennik alertów (do analizy trafności)
+HORIZONS = (15, 30, 60)       # po ilu minutach od alertu zapisujemy cenę
 # ========================
 
 ET = ZoneInfo("America/New_York")
 sent = {}  # ticker -> (poziom, czas)
+pending = []  # alerty czekające na wyniki po 15/30/60 min
+
+LOG_COLS = ["data_et", "godz_et", "ticker", "poziom", "cena", "spadek_pct",
+            "odbicie_pct", "rsi_teraz", "rsi_min", "wolumen_x", "poz_dolka",
+            "cena_15m", "cena_30m", "cena_60m", "max_60m", "min_60m"]
 
 
 def rsi(close, n=9):
@@ -106,7 +114,7 @@ def fetch_all(tickers):
 
 
 def classify(df):
-    """Zwraca (poziom, opis) albo None. poziom: 'green' / 'yellow'."""
+    """Zwraca (poziom, opis, cechy) albo None. poziom: 'green' / 'yellow'."""
     if df is None or len(df) < 25:
         return None
     c, v = df["Close"], df["Volume"]
@@ -130,13 +138,22 @@ def classify(df):
 
     info = (f"{price:.2f} USD | od szczytu {drop*100:.1f}% | "
             f"od dołka +{bounce*100:.1f}% | RSI {rsi_now:.0f} | wol. x{vol_ratio:.1f}")
+    feats = {
+        "cena": round(price, 4),
+        "spadek_pct": round(drop * 100, 2),
+        "odbicie_pct": round(bounce * 100, 2),
+        "rsi_teraz": round(rsi_now, 1),
+        "rsi_min": round(rsi_min, 1),
+        "wolumen_x": round(vol_ratio, 2),
+        "poz_dolka": low_pos,
+    }
 
     green = (price > sma10 and c.iloc[-1] > c.iloc[-2] > c.iloc[-3]
              and bounce >= 0.005 and low_pos <= 11 and vol_ratio >= 1.3)
     if green:
-        return "green", info
+        return "green", info, feats
     if low_pos <= 9 and rsi_now > rsi_prev and bounce >= 0.001:
-        return "yellow", info
+        return "yellow", info, feats
     return None
 
 
@@ -158,6 +175,46 @@ def should_send(t, level):
     if prev[0] == "yellow" and level == "green":
         return True
     return prev[0] != level or time.time() - prev[1] > COOLDOWN_MIN * 60
+
+
+def write_log(rec):
+    """Dopisuje jeden wiersz do alerts_log.csv."""
+    new = not os.path.exists(LOG_FILE)
+    try:
+        os.makedirs(os.path.dirname(LOG_FILE) or ".", exist_ok=True)
+        with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(LOG_COLS)
+            w.writerow([rec.get(k, "") for k in LOG_COLS])
+    except Exception as e:
+        print("Błąd zapisu logu:", e)
+
+
+def update_pending(data):
+    """Uzupełnia ceny po 15/30/60 min i zapisuje gotowe alerty do logu."""
+    now = time.time()
+    for rec in pending[:]:
+        df = data.get(rec["ticker"])
+        p = float(df["Close"].iloc[-1]) if df is not None and len(df) else None
+        age = (now - rec["_t"]) / 60
+        if p is not None:
+            rec["max_60m"] = round(max(rec["max_60m"], p), 4)
+            rec["min_60m"] = round(min(rec["min_60m"], p), 4)
+            for h in HORIZONS:
+                key = f"cena_{h}m"
+                if key not in rec and age >= h:
+                    rec[key] = round(p, 4)
+        if age >= max(HORIZONS):
+            write_log(rec)
+            pending.remove(rec)
+
+
+def flush_pending():
+    """Na koniec przebiegu zapisuje alerty, którym nie minęło jeszcze 60 min."""
+    for rec in pending:
+        write_log(rec)
+    pending.clear()
 
 
 def main():
@@ -190,12 +247,20 @@ def main():
 
         data = fetch_all(candidates)
         empty_rounds = 0 if data else empty_rounds + 1
+        update_pending(data)
         hits = []
         for t, df in data.items():
             res = classify(df)
             if res and should_send(t, res[0]):
-                hits.append((res[0], t, res[1]))
-                sent[t] = (res[0], time.time())
+                level, info, feats = res
+                hits.append((level, t, info))
+                sent[t] = (level, time.time())
+                rec = {"data_et": now_et.strftime("%Y-%m-%d"),
+                       "godz_et": now_et.strftime("%H:%M"),
+                       "ticker": t, "poziom": level, **feats,
+                       "max_60m": feats["cena"], "min_60m": feats["cena"],
+                       "_t": time.time()}
+                pending.append(rec)
         if hits:
             hits.sort(key=lambda h: h[0] != "green")      # zielone najpierw
             lines = []
@@ -207,6 +272,8 @@ def main():
             print("Brak danych, kończę.")
             break
         time.sleep(max(5, 60 - (time.time() - started)))
+
+    flush_pending()
 
 
 if __name__ == "__main__":
