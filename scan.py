@@ -160,12 +160,16 @@ def classify(df):
 def send(text):
     token, chat = os.getenv("TELEGRAM_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
     print(text)
-    if token and chat:
-        try:
-            requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+    if not token or not chat:
+        print("TELEGRAM: brak TELEGRAM_TOKEN lub TELEGRAM_CHAT_ID w środowisku")
+        return
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
                           data={"chat_id": chat, "text": text}, timeout=20)
-        except Exception as e:
-            print("Telegram błąd:", e)
+        if r.status_code != 200:
+            print("TELEGRAM błąd:", r.status_code, r.text)
+    except Exception as e:
+        print("Telegram błąd:", e)
 
 
 def should_send(t, level):
@@ -230,6 +234,7 @@ def main():
     if not candidates:
         candidates = FALLBACK
     print(f"Do skanowania: {len(candidates)} spółek do {MAX_PRICE} USD")
+    send(f"✅ Skaner wystartował, skanuję {len(candidates)} spółek")
 
     empty_rounds = 0
     while True:
