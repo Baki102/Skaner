@@ -29,6 +29,7 @@ HORIZONS = (15, 30, 60)       # po ilu minutach od alertu zapisujemy cenę
 ET = ZoneInfo("America/New_York")
 sent = {}  # ticker -> (poziom, czas)
 pending = []  # alerty czekające na wyniki po 15/30/60 min
+NAMES = {}  # ticker -> pełna nazwa spółki
 
 LOG_COLS = ["data_et", "godz_et", "ticker", "poziom", "cena", "spadek_pct",
             "odbicie_pct", "rsi_teraz", "rsi_min", "wolumen_x", "poz_dolka",
@@ -57,6 +58,9 @@ def load_universe():
                 df = df[df["ETF"] == "N"]
             if "Test Issue" in df:
                 df = df[df["Test Issue"] == "N"]
+            if "Security Name" in df:
+                for sym, nm in zip(df[col], df["Security Name"]):
+                    NAMES[str(sym)] = str(nm).split(" - ")[0].strip()
             s = df[col].astype(str)
             s = s[s.str.fullmatch(r"[A-Z]{1,5}")]
             s = s[~((s.str.len() == 5) & s.str[-1].isin(["W", "U", "R"]))]  # warranty/jednostki
@@ -280,7 +284,9 @@ def main():
             lines = []
             for level, t, info in hits[:10]:
                 icon = "🟢 ODBICIE WIDOCZNE" if level == "green" else "🟡 możliwe odbicie"
-                lines.append(f"{icon}: {t}\n{info}")
+                name = NAMES.get(t)
+                label = f"{t} ({name})" if name else t
+                lines.append(f"{icon}: {label}\n{info}")
             send("\n\n".join(lines) + "\n\n(sygnał techniczny, nie rekomendacja)")
         if empty_rounds >= 10:
             print("Brak danych, kończę.")
