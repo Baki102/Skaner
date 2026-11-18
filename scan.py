@@ -222,6 +222,12 @@ def flush_pending():
 
 
 def main():
+    now0 = dt.datetime.now(ET)
+    close0 = now0.replace(hour=16, minute=0, second=0, microsecond=0)
+    if now0.weekday() >= 5 or now0 >= close0:
+        print("Giełda zamknięta (weekend lub po sesji), kończę bez skanowania.")
+        return
+
     stop = None
     s = os.getenv("STOP_AT_UTC")
     if s:
@@ -234,8 +240,8 @@ def main():
     if not candidates:
         candidates = FALLBACK
     print(f"Do skanowania: {len(candidates)} spółek do {MAX_PRICE} USD")
-    send(f"✅ Skaner wystartował, skanuję {len(candidates)} spółek")
 
+    announced = False
     empty_rounds = 0
     while True:
         started = time.time()
@@ -252,6 +258,9 @@ def main():
 
         data = fetch_all(candidates)
         empty_rounds = 0 if data else empty_rounds + 1
+        if data and not announced:
+            send(f"✅ Skaner działa, sesja trwa, skanuję {len(data)} spółek")
+            announced = True
         update_pending(data)
         hits = []
         for t, df in data.items():
